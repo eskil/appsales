@@ -1,22 +1,40 @@
-require 'net/https'
+require 'mechanize'
 require 'nokogiri'
-
+require 'logger'
 
 class AppSales
   def initialize(username, password)
     @username = username
     @password = password
-    puts get_login_form
+    @mecha = Mechanize.new
+
+    @base_url = 'https://itunesconnect.apple.com'
+    @logger = Logger.new(STDOUT)
+    @logger.level = Logger::INFO
   end
 
   def vendor_id
+    @logger.info("Getting vendor id")
+    login
+
+    @mecha.get(@base_url) do |home_page|
+      sales_page = @mecha.click(home_page.link_with(:text => /Sales and Trends/))
+      @mecha.get('https://reportingitc2.apple.com/ligerService/PIANO/reports') do |piano|
+        puts piano.content
+      end
+    end
+    return 1
   end
 
   def app_ids
-    [1]
+    @logger.info("Getting app ids")
+    login
+
+    return []
   end
 
   def reviews(args = {})
+    @logger.info("Getting reviews")
     app_ids = args[:app_ids] or app_ids
     since = args[:since]
     puts app_ids
@@ -24,43 +42,35 @@ class AppSales
   end
 
   def report(type, date)
+    @logger.info("Getting reports")
     puts type, date
     []
   end
 
   protected
 
-  # Try n times to load the url
-  def load_url(url, limit = 3)
-    raise Exception, 'Too many HTTP redirects' if limit == 0
+  def login(force = false)
+    return if !force && logged_in?
 
-    url = (url.is_a? URI) ? url : URI.parse(url)
+    @logger.info("Logging in")
+    @mecha.get(@base_url) do |page|
+      login_result = page.form_with(:name => 'appleConnectForm') do |login|
+        login.theAccountName = @username
+        login.theAccountPW = @password
+      end.submit
 
-    response = Net::HTTP.start(url.host, use_ssl: true) do |http|
-      http.get url.request_uri
-    end
-
-    case response
-    when Net::HTTPRedirection
-      new_url = URI.parse(response['location'])
-      if new_url.host
-        url = new_url
-      else
-        url.path = new_url.path
-      end
-      load_url(url, limit - 1)
-    when Net::HTTPSuccess
-      return response.body
-    else
-      response.error!
+      raise 'login failed' if login_result.search("//a[text()='Sign Out']/@href").empty?
     end
   end
 
-  def get_login_form(url = 'https://itunesconnect.apple.com')
-    page = load_url(url)
-    doc = Nokogiri::HTML(page)
-    form = doc.xpath('//form[@name="appleConnectForm"]')
-    action = form[0]['action']
-    puts action
+  def logged_in?
+    result = false
+    @mecha.get(@base_url) do |page|
+      link = page.search("//a[text()='Sign Out']/@href")
+      result = !link.empty?
+    end
+    @logger.info(result ? "Logged in" : "Not logged in")
+    return result
   end
+
 end
