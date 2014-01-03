@@ -1,0 +1,16 @@
+.bundle
+*.log
+*.dat
+tmp/*/*
+tmp/*
+*.swp
+*~
+.DS_Store
+.sass-cache
+.rvmrc
+\#*\#
+.\#*
+coverage/
+.ruby-gemset
+.ruby-version
+appsales-*.gem
