@@ -1,5 +1,5 @@
 require 'mechanize'
-require 'nokogiri'
+require 'json'
 require 'logger'
 
 class AppSales
@@ -14,23 +14,34 @@ class AppSales
   end
 
   def vendor_id
-    @logger.info("Getting vendor id")
-    login
-
-    @mecha.get(@base_url) do |home_page|
+    login do |home_page|
       sales_page = @mecha.click(home_page.link_with(:text => /Sales and Trends/))
       @mecha.get('https://reportingitc2.apple.com/ligerService/PIANO/reports') do |piano|
-        puts piano.content
+        j = JSON.parse(piano.content)
+        return j['contents'][0]['reports'][0]['vendors'][0]['id']
       end
     end
-    return 1
+
+    return nil
   end
 
   def app_ids
-    @logger.info("Getting app ids")
-    login
+    result = {}
 
-    return []
+    login do |home_page|
+      apps_page = @mecha.click(home_page.link_with(:text => /Manage Your Apps/))
+      all_page = @mecha.click(apps_page.link_with(:text => /See All/))
+      apps = all_page.search("div.resultList table")
+      apps.xpath("tr[not(contains(@class, 'column-headers'))]").each do |row|
+        cells = row.xpath("td")
+        app_name = cells[0].search("a")[0].text.strip()
+        version = cells[2].search("p")[0].text.strip()
+        app_id = cells[4].search("p")[0].text.strip()
+        result[app_id] =  {name: app_name, version: version}
+      end
+    end
+
+    return result
   end
 
   def reviews(args = {})
@@ -49,28 +60,23 @@ class AppSales
 
   protected
 
-  def login(force = false)
-    return if !force && logged_in?
-
-    @logger.info("Logging in")
+  def login
+    @logger.info("Fetching homepage")
     @mecha.get(@base_url) do |page|
-      login_result = page.form_with(:name => 'appleConnectForm') do |login|
-        login.theAccountName = @username
-        login.theAccountPW = @password
-      end.submit
+      signout_link = page.search("//a[text()='Sign Out']/@href")
+      if signout_link.empty?
+        @logger.info("Logging in")
+        login_result = page.form_with(:name => 'appleConnectForm') do |login|
+          login.theAccountName = @username
+          login.theAccountPW = @password
+        end.submit
 
-      raise 'login failed' if login_result.search("//a[text()='Sign Out']/@href").empty?
+        raise 'login failed' if login_result.search("//a[text()='Sign Out']/@href").empty?
+
+        yield login_result
+      else
+        yield page
+      end
     end
   end
-
-  def logged_in?
-    result = false
-    @mecha.get(@base_url) do |page|
-      link = page.search("//a[text()='Sign Out']/@href")
-      result = !link.empty?
-    end
-    @logger.info(result ? "Logged in" : "Not logged in")
-    return result
-  end
-
 end
