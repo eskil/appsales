@@ -20,5 +20,5 @@ Gem::Specification.new do |s|
   s.required_rubygems_version = ">= 1.3.6"
 
   s.add_dependency "nokogiri"
-  s.add_dependency "mechanie"
+  s.add_dependency "mechanize"
 end

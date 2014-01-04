@@ -5,6 +5,8 @@ require 'nokogiri'
 require 'json'
 require 'logger'
 require 'appsales/stores'
+require 'zlib'
+require 'csv'
 
 class AppSales
   def initialize(username, password)
@@ -18,20 +20,17 @@ class AppSales
   end
 
   def vendor_id
-    login do |home_page|
+    @vendor_id ||= login do |home_page|
       sales_page = @mecha.click(home_page.link_with(:text => /Sales and Trends/))
       @mecha.get('https://reportingitc2.apple.com/ligerService/PIANO/reports') do |piano|
         j = JSON.parse(piano.content)
         return j['contents'][0]['reports'][0]['vendors'][0]['id']
       end
     end
-
-    return nil
   end
 
   def app_ids
     result = {}
-
     login do |home_page|
       apps_page = @mecha.click(home_page.link_with(:text => /Manage Your Apps/))
       all_page = @mecha.click(apps_page.link_with(:text => /See All/))
@@ -44,11 +43,14 @@ class AppSales
         result[app_id] =  {name: app_name, version: version}
       end
     end
-
+    @app_ids = result
     return result
   end
 
   def reviews(args = {})
+    result = {}
+    failed_stores = []
+
     @logger.info("Getting reviews")
     @logger.info("Getting reviews #{STORE_IDS}")
     apps = args[:app_ids] ? [args[:app_ids]] : self.app_ids.keys
@@ -61,7 +63,7 @@ class AppSales
         uri = URI.parse("https://itunes.apple.com/WebObjects/MZStore.woa/wa/customerReviews?s=#{store_id}&id=#{app_id}&displayable-kind=11&page=#{page}&sort=4")
 
         (0..3).each do |limit|
-          raise Exception, 'Too many HTTP redirects' if limit == 3
+          raise Exception, 'Too many HTTP redirects or attempts' if limit == 3
 
           @logger.info("#{limit}: #{uri}")
           response = Net::HTTP.start(uri.host, use_ssl: true) do |http|
@@ -81,28 +83,79 @@ class AppSales
             end
           when Net::HTTPSuccess
             doc = Nokogiri::HTML(response.body)
-            reviews = doc.xpath("//div[@class='customer-review']")
-            puts "#{app_id} reviews in #{country} #{reviews.count}"
-            reviews.each do |review|
-              reviewer = review.search("//a[@class='reviews']").text()
-              content = review.xpath("//p[@class='content']")
-              puts "#{reviewer} #{content}"
+            doc.search("//div[@class='customer-review']").each do |review|
+              reviewer = review.search("a.reviewer").text.strip
+              url = review.search("a.reviewer/@href").text.strip
+              content = review.search("p.content").text.strip
+              rating = review.search("div.rating/@aria-label").text.to_i
+              result[store_id] ||= []
+              result[store_id] << {reviewer: reviewer, url: url, rating: rating, review: content}
             end
             break
           else
-            response.error!
+            failed_stores << store_id
+            break
+            # response.error!
           end
         end
       end
     end
-    puts app_ids
-    puts since
+
+    return result, failed_stores
   end
 
   def report(type, date)
+    result = []
+
     @logger.info("Getting reports")
-    puts type, date
-    []
+    uri = URI.parse('https://reportingitc.apple.com/autoingestion.tft')
+
+    (0..3).each do |limit|
+      raise Exception, 'Too many HTTP redirects or attempts' if limit == 3
+
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = true
+      http.set_debug_output($stdout)
+
+      data = {
+        USERNAME: @username,
+        PASSWORD: @password,
+        VNDNUMBER: self.vendor_id,
+        TYPEOFREPORT: 'Sales',
+        DATETYPE: type,
+        REPORTTYPE: 'Summary',
+        REPORTDATE: date.strftime('%Y%m%d')
+      }
+
+      request = Net::HTTP::Post.new(uri.request_uri)
+      request['User-Agent'] = 'java/1.6.0_26'
+      request.set_form_data(data)
+
+      response = http.request(request)
+
+      case response
+      when Net::HTTPRedirection
+        new_uri = URI.parse(response['location'])
+        if new_uri.host
+          uri = new_uri
+        else
+          uri.path = new_uri.path
+        end
+      when Net::HTTPSuccess
+        gz = Zlib::GzipReader.new(StringIO.new(response.body))
+        blob = gz.read
+        csv = CSV.parse(blob, {col_sep: "\t"})
+        keys = csv.shift.map{|key| key.downcase.gsub(' ', '_')}
+        csv.each do |line|
+          result << Hash[keys.zip(line)]
+        end
+        break
+      else
+        response.error!
+      end
+    end
+
+    return result
   end
 
   protected
