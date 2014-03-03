@@ -1,19 +1,19 @@
 # encoding: utf-8
-require 'net/http'
-require 'mechanize'
-require 'nokogiri'
+require 'appsales/stores'
+require 'csv'
 require 'json'
 require 'logger'
-require 'appsales/stores'
+require 'money'
+require 'mechanize'
+require 'net/http'
+require 'nokogiri'
 require 'zlib'
-require 'csv'
 
 class AppSales
   def initialize(username, password)
     @username = username
     @password = password
     @mecha = Mechanize.new
-
     @base_url = 'https://itunesconnect.apple.com'
     @logger = Logger.new(STDOUT)
     @logger.level = Logger::INFO
@@ -47,15 +47,13 @@ class AppSales
     return result
   end
 
-  def reviews(args = {})
+  def reviews(options = {})
     result = {}
     failed_stores = []
 
-    @logger.info("Getting reviews")
-    @logger.info("Getting reviews #{STORE_IDS}")
-    apps = args[:app_ids] ? [args[:app_ids]] : self.app_ids.keys
+    apps = options[:app_ids] ? [options[:app_ids]] : self.app_ids.keys
 
-    since = args[:since]
+    since = options[:since]
     apps.each do |app_id|
       STORE_IDS.each do |country, store_id|
         page = 1
@@ -104,10 +102,12 @@ class AppSales
     return result, failed_stores
   end
 
-  def report(type, date)
+  def report(type, date, options = {})
+    use_money = options[:use_money] || false
+    use_date = options[:use_date] || true
+
     result = []
 
-    @logger.info("Getting reports")
     uri = URI.parse('https://reportingitc.apple.com/autoingestion.tft')
 
     (0..3).each do |limit|
@@ -115,7 +115,7 @@ class AppSales
 
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = true
-      http.set_debug_output($stdout)
+      # http.set_debug_output($stdout)
 
       data = {
         USERNAME: @username,
@@ -147,7 +147,18 @@ class AppSales
         csv = CSV.parse(blob, {col_sep: "\t"})
         keys = csv.shift.map{|key| key.downcase.gsub(' ', '_')}
         csv.each do |line|
-          result << Hash[keys.zip(line)]
+          entry = Hash[keys.zip(line)]
+          if use_money
+            entry['proceeds'] = Money.new(entry.delete('developer_proceeds').to_f * 100.0,
+                                          entry.delete('currency_of_proceeds'))
+            entry['price'] = Money.new(entry.delete('customer_price').to_f * 100.0,
+                                          entry.delete('customer_currency'))
+          end
+          if use_date
+            entry['begin_date'] = Date.strptime(entry['begin_date'], '%m/%d/%Y')
+            entry['end_date'] = Date.strptime(entry['end_date'], '%m/%d/%Y')
+          end
+          result << entry
         end
         break
       else
@@ -160,12 +171,13 @@ class AppSales
 
   protected
 
+  # Get the itunesconnect home page. If there's a sign-out link, we're
+  # already logged in and can just yield that page. Otherwise, login
+  # first.
   def login
-    @logger.info("Fetching homepage")
     @mecha.get(@base_url) do |page|
       signout_link = page.search("//a[text()='Sign Out']/@href")
       if signout_link.empty?
-        @logger.info("Logging in")
         login_result = page.form_with(:name => 'appleConnectForm') do |login|
           login.theAccountName = @username
           login.theAccountPW = @password
