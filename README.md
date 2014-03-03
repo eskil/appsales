@@ -21,5 +21,7 @@ puts appsales.app_ids
 puts appsales.report(:daily, Date.new(2014, 02, 06))
 
 # Get the weekly sales info for week ending Feb 16th
-puts appsales.report(:daily, Date.new(2014, 02, 16))
+puts appsales.report(:weekly, Date.new(2014, 02, 16))
 ```
+
+Copyright (c) 2014 Eskil Olsen (eskil@eskil.org), released under the MIT license.
